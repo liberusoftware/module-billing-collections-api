@@ -8,10 +8,15 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Gate;
+use Liberu\Billing\Collections\Actions\ApplyCreditControl;
 use Liberu\Billing\Collections\Actions\OpenCollectionCase;
 use Liberu\Billing\Collections\Actions\PromisePayment;
 use Liberu\Billing\Collections\Actions\RecoverCollectionCase;
+use Liberu\Billing\Collections\Actions\RetryCollectionCase;
+use Liberu\Billing\Collections\Actions\ScheduleDunning;
+use Liberu\Billing\Collections\Actions\ScheduleReminder;
 use Liberu\Billing\Collections\Actions\SuspendCollectionCase;
+use Liberu\Billing\Collections\Actions\WriteOffCollectionCase;
 use Liberu\Billing\Collections\Models\CollectionCase;
 use Liberu\Billing\Collections\Queries\ListCollectionCases;
 
@@ -38,6 +43,7 @@ final class CollectionCaseController extends Controller
 
     public function promise(Request $request, CollectionCase $case, PromisePayment $promise): JsonResponse
     {
+        $case = $this->forCurrentTeam($request, $case);
         Gate::authorize('update', $case);
         $data = $request->validate(['due_at' => ['required', 'date', 'after:now']]);
 
@@ -46,21 +52,75 @@ final class CollectionCaseController extends Controller
 
     public function suspend(Request $request, CollectionCase $case, SuspendCollectionCase $suspend): JsonResponse
     {
+        $case = $this->forCurrentTeam($request, $case);
         Gate::authorize('update', $case);
         $data = $request->validate(['reason' => ['required', 'string', 'max:1000']]);
 
         return response()->json(['data' => $this->resource($suspend->execute($case, $data['reason']))]);
     }
 
-    public function recover(CollectionCase $case, RecoverCollectionCase $recover): JsonResponse
+    public function recover(Request $request, CollectionCase $case, RecoverCollectionCase $recover): JsonResponse
     {
+        $case = $this->forCurrentTeam($request, $case);
         Gate::authorize('update', $case);
 
         return response()->json(['data' => $this->resource($recover->execute($case))]);
     }
 
+    public function retry(Request $request, CollectionCase $case, RetryCollectionCase $retry): JsonResponse
+    {
+        $case = $this->forCurrentTeam($request, $case);
+        Gate::authorize('update', $case);
+        $data = $request->validate(['next_action_at' => ['required', 'date', 'after:now']]);
+
+        return response()->json(['data' => $this->resource($retry->execute($case, new \DateTimeImmutable($data['next_action_at'])))]);
+    }
+
+    public function writeOff(Request $request, CollectionCase $case, WriteOffCollectionCase $writeOff): JsonResponse
+    {
+        $case = $this->forCurrentTeam($request, $case);
+        Gate::authorize('update', $case);
+        $data = $request->validate(['reason' => ['required', 'string', 'max:1000']]);
+
+        return response()->json(['data' => $this->resource($writeOff->execute($case, $data['reason']))]);
+    }
+
+    public function dunning(Request $request, CollectionCase $case, ScheduleDunning $schedule): JsonResponse
+    {
+        $case = $this->forCurrentTeam($request, $case);
+        Gate::authorize('update', $case);
+        $data = $request->validate(['next_action_at' => ['required', 'date', 'after:now']]);
+
+        return response()->json(['data' => $this->resource($schedule->execute($case, new \DateTimeImmutable($data['next_action_at'])))]);
+    }
+
+    public function reminder(Request $request, CollectionCase $case, ScheduleReminder $schedule): JsonResponse
+    {
+        $case = $this->forCurrentTeam($request, $case);
+        Gate::authorize('update', $case);
+        $data = $request->validate(['next_action_at' => ['required', 'date', 'after:now']]);
+
+        return response()->json(['data' => $this->resource($schedule->execute($case, new \DateTimeImmutable($data['next_action_at'])))]);
+    }
+
+    public function creditControl(Request $request, CollectionCase $case, ApplyCreditControl $apply): JsonResponse
+    {
+        $case = $this->forCurrentTeam($request, $case);
+        Gate::authorize('update', $case);
+        $data = $request->validate(['level' => ['required', 'string', 'max:50'], 'reason' => ['nullable', 'string', 'max:1000']]);
+
+        return response()->json(['data' => $this->resource($apply->execute($case, $data['level'], $data['reason'] ?? null))]);
+    }
+
     private function resource(CollectionCase $case): array
     {
         return ['id' => (string) $case->getKey(), 'type' => 'billing-collection-cases', 'attributes' => ['type' => $case->type, 'status' => $case->status->value, 'amount_minor' => $case->amount_minor, 'currency' => $case->currency, 'next_action_at' => $case->next_action_at?->toIso8601String(), 'promise_due_at' => $case->promise_due_at?->toIso8601String(), 'reason' => $case->reason]];
+    }
+
+    private function forCurrentTeam(Request $request, CollectionCase $case): CollectionCase
+    {
+        $teamId = data_get($request->user(), 'current_team_id') ?? data_get($request->user(), 'currentTeam.id');
+
+        return CollectionCase::query()->whereKey($case->getKey())->where('team_id', $teamId)->firstOrFail();
     }
 }
